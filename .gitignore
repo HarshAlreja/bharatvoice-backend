@@ -1,0 +1,42 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Virtual environment
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Uploaded user files (documents)
+app/uploads/
+
+# FAISS vector indexes (per-business, regenerated from documents anyway)
+app/vectorstore/indexes/*
+!app/vectorstore/indexes/.gitkeep
+
+# Flask instance folder
+instance/
+
+# Migrations are fine to commit, but not their __pycache__
+migrations/__pycache__/
+
+# IDE/editor
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
