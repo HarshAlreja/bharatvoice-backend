@@ -16,4 +16,7 @@ gunicorn==22.0.0
 pypdf2
 python-docx
 langchain-huggingface
+langdetect==1.0.9
 sentence-transformers
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.3.1+cpu
