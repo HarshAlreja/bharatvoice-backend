@@ -16,3 +16,4 @@ gunicorn==22.0.0
 pypdf2
 python-docx
 langchain-huggingface
+sentence-transformers
