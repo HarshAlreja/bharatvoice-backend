@@ -11,14 +11,15 @@ class BaseConfig:
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-jwt-secret")
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
-    # Flask-JWT-Extended defaults to a 15-minute access token expiry if this
-    # isn't set -- that's what was causing the 401s during testing, not a
-    # secret key change. 7 days is generous for dev; tighten this before
-    # going to production (e.g. 1-2 hours, with a refresh token flow).
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(days=7)
 
     GROQ_API_KEY = os.getenv("GROQ_API_KEY")
     SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
+
+    # Free HuggingFace Inference API token -- used for embeddings instead of
+    # loading torch/sentence-transformers locally (avoids OOM on low-RAM hosts).
+    # Get one at huggingface.co -> Settings -> Access Tokens -> "Read" token.
+    HF_TOKEN = os.getenv("HF_TOKEN")
 
     # Meta Developer App level (ONE-TIME setup, not per-client)
     META_APP_ID = os.getenv("META_APP_ID")
@@ -43,7 +44,7 @@ class DevConfig(BaseConfig):
 class ProdConfig(BaseConfig):
     DEBUG = False
     SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")
-    JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=2)  # tighter in production
+    JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=2)
 
 
 def get_config():

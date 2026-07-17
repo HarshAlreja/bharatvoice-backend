@@ -1,14 +1,14 @@
 """
 Embedding Service - Document Extraction, Validation & Processing Orchestrator
-Ported from your existing production code, adapted to the app/ folder structure
-(app.extensions.db, app.models.document.Document, app.models.document_chunk.DocumentChunk).
 
-⚠️ ONE GAP: the actual text -> vector call (`_generate_embedding_vector`) is a
-placeholder below. Your original file delegated this to `RAGService.add_documents()`,
-which wasn't shared -- if that file has the real embedding model call (sentence-
-transformers, or whatever you're using), send it and this one function gets wired in.
-Everything else here (extraction, validation, hashing, language detection, chunking,
-FAISS storage, DB writes) is fully wired to this project's models.
+Embeddings are generated via HuggingFace's free hosted Inference API instead
+of loading sentence-transformers/torch locally. This was changed because
+loading torch locally requires more RAM than low-cost hosting tiers (e.g.
+Render's free 512MB plan) provide, causing OOM (SIGKILL) crashes. Calling
+a hosted API instead means this process never needs torch in memory at all.
+
+Requires HF_TOKEN in .env -- a free HuggingFace account, Settings -> Access
+Tokens -> create a "Read" token.
 """
 
 import logging
@@ -17,8 +17,11 @@ import time
 from typing import Tuple, Dict, Optional, Any, List
 from datetime import datetime
 
+import numpy as np
+import requests
 import PyPDF2
 from docx import Document as DocxDocument
+from flask import current_app
 
 from app.extensions import db
 from app.models.document import Document
@@ -41,6 +44,12 @@ SUPPORTED_EXTENSIONS = {'.pdf', '.docx', '.txt', '.doc', '.xlsx', '.csv', '.json
 
 DEFAULT_CHUNK_SIZE = 700       # words per chunk
 DEFAULT_CHUNK_OVERLAP = 120    # words of overlap between chunks
+
+HF_EMBEDDING_API_URL = (
+    "https://router.huggingface.co/hf-inference/models/"
+    "sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
+)
+HF_MAX_RETRIES = 5
 
 
 # ============================================================================
@@ -271,11 +280,7 @@ class EmbeddingService:
             with open(file_path, 'r', encoding='utf-8') as file:
                 reader = csv.reader(file)
                 # Read up to 5 rows just to sanity-check the file parses --
-                # but a file with FEWER than 5 rows is still perfectly valid.
-                # (Previously this used a bare `for _ in range(5): next(reader)`,
-                # which raised StopIteration on short files -- and str(StopIteration())
-                # is always an empty string, which is why the error message
-                # showed "CSV file error: " with nothing after it.)
+                # a file with FEWER than 5 rows is still perfectly valid.
                 for _, row in zip(range(5), reader):
                     pass
             return True, None
@@ -337,7 +342,7 @@ class EmbeddingService:
             return 'en'
 
     # ========================================================================
-    # CHUNKING + EMBEDDING (this project's FAISS-per-business storage)
+    # CHUNKING + EMBEDDING (via HuggingFace Inference API -- no local torch)
     # ========================================================================
 
     @staticmethod
@@ -355,38 +360,52 @@ class EmbeddingService:
             start = end - overlap if end - overlap > start else end
         return chunks
 
-    # Shared model instance -- HuggingFaceEmbeddings is expensive to load, so it's
-    # loaded once per process and reused across every call, not per-request.
-    _embedding_model = None
-
-    @classmethod
-    def _get_embedding_model(cls):
-        if cls._embedding_model is None:
-            from langchain_huggingface import HuggingFaceEmbeddings
-            logger.info("Loading embedding model: sentence-transformers/all-MiniLM-L6-v2")
-            cls._embedding_model = HuggingFaceEmbeddings(
-                model_name="sentence-transformers/all-MiniLM-L6-v2"
-            )
-        return cls._embedding_model
-
     def _generate_embedding_vector(self, text: str) -> list:
         """
-        Matches your original RAGService's embedding model: sentence-transformers/
-        all-MiniLM-L6-v2 via HuggingFaceEmbeddings (local, no API cost). Output is
-        384-dimensional, L2-normalized for cosine similarity via faiss.IndexFlatIP-
-        style scoring -- matches this project's faiss_manager.py default dimension.
-        """
-        model = self._get_embedding_model()
-        vector = model.embed_query(text)
+        Calls HuggingFace's free Inference API instead of loading the model
+        locally. Avoids the ~1GB+ RAM footprint of torch/sentence-transformers,
+        which was crashing low-memory hosts (Render free tier OOM/SIGKILL).
 
-        # L2-normalize so dot-product search behaves like cosine similarity,
-        # same as your original RAGService._normalize_embeddings()
-        import numpy as np
-        arr = np.array(vector, dtype="float32")
-        norm = np.linalg.norm(arr)
-        if norm > 0:
-            arr = arr / norm
-        return arr.tolist()
+        Requires HF_TOKEN in .env (free HuggingFace account -> Settings ->
+        Access Tokens -> create a "Read" token).
+        """
+        headers = {"Authorization": f"Bearer {current_app.config['HF_TOKEN']}"}
+
+        for attempt in range(HF_MAX_RETRIES):
+            resp = requests.post(
+                HF_EMBEDDING_API_URL,
+                headers=headers,
+                json={"inputs": text},
+                timeout=30,
+            )
+
+            if resp.status_code == 200:
+                vector = resp.json()
+                arr = np.array(vector, dtype="float32")
+                # Some responses come back per-token instead of pre-pooled --
+                # mean-pool defensively if so.
+                if arr.ndim > 1:
+                    arr = arr.mean(axis=0)
+
+                norm = np.linalg.norm(arr)
+                if norm > 0:
+                    arr = arr / norm
+                return arr.tolist()
+
+            if resp.status_code == 503:
+                # Model is cold-starting on HF's shared infrastructure
+                wait_time = 10
+                try:
+                    wait_time = resp.json().get("estimated_time", 10)
+                except Exception:
+                    pass
+                logger.info("HF embedding model cold-starting, waiting %.1fs (attempt %d)", wait_time, attempt + 1)
+                time.sleep(min(wait_time, 20))
+                continue
+
+            resp.raise_for_status()
+
+        raise RuntimeError("HuggingFace Inference API did not respond after retries (model may be cold-starting)")
 
     # ========================================================================
     # ERROR HANDLING
@@ -422,10 +441,8 @@ class EmbeddingService:
     ) -> Dict[str, Any]:
         """
         Full pipeline: validate -> extract -> hash -> detect language -> chunk ->
-        embed each chunk -> store in FAISS(business_id) -> write document_chunks rows.
-
-        Note: this project's Document model uses `status` (processing/indexed/failed),
-        not `embedding_status` -- mapped accordingly below.
+        embed each chunk (via HF API) -> store in FAISS(business_id) -> write
+        document_chunks rows.
         """
         start_time = time.time()
 
@@ -469,11 +486,11 @@ class EmbeddingService:
             for idx, chunk_text in enumerate(chunks):
                 try:
                     vector = self._generate_embedding_vector(chunk_text)
-                except NotImplementedError:
+                except Exception as exc:
                     document.status = 'failed'
                     db.session.commit()
                     return self._log_and_error(
-                        'Embedding model not wired up yet', original_filename,
+                        f'Embedding API error: {exc}', original_filename,
                         time.time() - start_time, file_type, file_size_bytes, document
                     )
 
@@ -543,15 +560,14 @@ class EmbeddingService:
 # MODULE-LEVEL FUNCTION
 # ============================================================================
 # rag_service.py needs to embed a customer's query string at retrieval time --
-# it doesn't need the full document pipeline (validation, extraction, chunking,
-# DB writes), just "text in, vector out" using the same model. This is NOT the
-# same thing as the old document_processor.py wrapper discussion -- that was
-# duplicating the whole pipeline. This is a single, legitimate shared call.
+# it doesn't need the full document pipeline, just "text in, vector out"
+# using the same HF API-backed model.
 
 _embedding_service_singleton = EmbeddingService()
 
 
 def generate_embedding(text: str) -> list:
     """Embed a single piece of text (e.g. a search query) using the same
-    sentence-transformers/all-MiniLM-L6-v2 model as document processing."""
+    HuggingFace-hosted sentence-transformers/all-MiniLM-L6-v2 model as
+    document processing."""
     return _embedding_service_singleton._generate_embedding_vector(text)
