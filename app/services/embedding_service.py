@@ -42,8 +42,8 @@ HASH_CHUNK_SIZE = 8192
 
 SUPPORTED_EXTENSIONS = {'.pdf', '.docx', '.txt', '.doc', '.xlsx', '.csv', '.json'}
 
-DEFAULT_CHUNK_SIZE = 700       # words per chunk
-DEFAULT_CHUNK_OVERLAP = 120    # words of overlap between chunks
+DEFAULT_CHUNK_SIZE = 150     # words per chunk
+DEFAULT_CHUNK_OVERLAP = 30    # words of overlap between chunks
 
 HF_EMBEDDING_API_URL = (
     "https://router.huggingface.co/hf-inference/models/"
