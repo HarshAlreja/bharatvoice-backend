@@ -4,6 +4,8 @@ from flask import current_app
 from app.extensions import db
 from app.models.token_usage_log import TokenUsageLog
 
+# Centralized model configuration to avoid hardcoding strings downstream
+GROQ_MODEL = "openai/gpt-oss-120b"
 
 def generate_reply(business_id: int, conversation_id: int, context_chunks: list, user_message: str) -> str:
     client = Groq(api_key=current_app.config["GROQ_API_KEY"])
@@ -15,8 +17,9 @@ def generate_reply(business_id: int, conversation_id: int, context_chunks: list,
         f"Context:\n{context_text}"
     )
 
+    # Call the Groq API using the updated model
     completion = client.chat.completions.create(
-        model="llama-3.1-70b-versatile",
+        model=GROQ_MODEL,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
@@ -26,10 +29,11 @@ def generate_reply(business_id: int, conversation_id: int, context_chunks: list,
     reply = completion.choices[0].message.content
     tokens_used = completion.usage.total_tokens if completion.usage else 0
 
+    # Log token usage with the updated model string
     db.session.add(TokenUsageLog(
         business_id=business_id,
         conversation_id=conversation_id,
-        model_used="llama-3.1-70b-versatile",
+        model_used=GROQ_MODEL,
         tokens_used=tokens_used,
     ))
     db.session.commit()
