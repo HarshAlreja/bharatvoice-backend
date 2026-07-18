@@ -2,12 +2,14 @@
 Sends messages via each business's OWN token + phone_number_id. Every call here
 looks up the correct WhatsAppNumber row first -- there is no shared credential.
 """
+import logging
 import requests
 from flask import current_app
 from app.models.whatsapp_number import WhatsAppNumber
 from app.utils.security import decrypt_token
 
 META_GRAPH_BASE = "https://graph.facebook.com"
+logger = logging.getLogger(__name__)
 
 
 def send_text_message(business_id: int, to_phone: str, body: str) -> dict:
@@ -33,6 +35,15 @@ def send_text_message(business_id: int, to_phone: str, body: str) -> dict:
         },
         timeout=15,
     )
+
+    # TEMP DEBUG LOGGING -- remove once the 400 is root-caused and fixed.
+    # This prints Meta's actual error.message/error.code, which the generic
+    # 400 Bad Request exception on its own doesn't show us.
+    logger.info(f"META RESPONSE STATUS: {resp.status_code}")
+    logger.info(f"META RESPONSE BODY: {resp.text}")
+    print(f"META RESPONSE STATUS: {resp.status_code}")
+    print(f"META RESPONSE BODY: {resp.text}")
+
     resp.raise_for_status()
     return resp.json()
 
